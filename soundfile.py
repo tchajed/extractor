@@ -7,6 +7,7 @@ import itertools
 import os
 import re
 import swigtools
+import sys
 import wave
 
 class SoundFile:
@@ -76,6 +77,9 @@ if __name__ == "__main__":
       print(a[i], ", ", end="", sep="")
     print("\n")
   wav = at(LoadWaves("."), 0)
+  if wav is None:
+    print("no wav files found")
+    sys.exit(1)
   print(len(wav))
 #sr = swigtools.floatPtr(wav.sr)
 # pass xtract.floata_to_voidp(sr)
