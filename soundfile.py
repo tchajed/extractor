@@ -1,5 +1,8 @@
-#!/usr/bin/env python
 # vim: tw=80:ts=2:sw=2:et:sta
+"""
+Wrapper for sound files that provides the low-level spectrogram.
+
+"""
 
 from __future__ import print_function
 from libxtract import xtract
@@ -12,7 +15,7 @@ import wave
 
 class SoundFile:
   def __len__(self):
-    return self.nsamples
+    return len(self.samples)
   def __init__(self, file):
     """
     Instantiate a SoundFile with a filename.
@@ -21,15 +24,15 @@ class SoundFile:
     """
     self.fname = file
     wav = wave.open(file)
-    self.nsamples = wav.getnframes()
+    nsamples = wav.getnframes()
     self.sr = wav.getframerate()
-    samplestring = wav.readframes(self.nsamples)
+    samplestring = wav.readframes(nsamples)
     data = map(ord, list(samplestring))
     # convert samples to a floatArray
-    a = xtract.floatArray(self.nsamples)
-    for i in xrange(self.nsamples):
+    a = xtract.floatArray(nsamples)
+    for i in xrange(nsamples):
       a[i] = float(data[i])
-    self.samples = a
+    self.samples = swigtools.CArray(a, nsamples)
   def spectrogram(self, nfft, nshift):
     """ Generate spectral vectors from the sound samples.
 
@@ -46,19 +49,20 @@ class SoundFile:
     args[2] = 0 # 0/1: whether or not to include DC component
     args[3] = 0 # 0/1: whether or not to apply normalization to the result
     while end <= len(self):
-      input = xtract.floata_index(self.samples, start)
+      input = xtract.floata_index(self.samples.a, start)
 # increase to nfft + 2 if including DC component
       spectrum = xtract.floatArray(nfft) 
       result = xtract.xtract_spectrum(input,
           nfft,
           xtract.floata_to_voidp(args),
           spectrum)
+      # TODO: check result to catch errors
       # first nfft/2 floats are coefficients, second half are just frequencies
       yield spectrum
       start += nshift
       end += nshift
 
-def LoadWaves(directory):
+def LoadSpeech(directory):
   """ Recursively generate the *.wav files in a directory. """
   for root, dirs, files in os.walk(directory):
     for f in files:
@@ -76,16 +80,16 @@ if __name__ == "__main__":
     for i in xrange(0,n):
       print(a[i], ", ", end="", sep="")
     print("\n")
-  wav = at(LoadWaves("."), 0)
-  if wav is None:
+  sound = at(LoadSpeech("."), 0)
+  if sound is None:
     print("no wav files found")
     sys.exit(1)
-  print(len(wav))
+  print(len(sound))
 #sr = swigtools.floatPtr(wav.sr)
 # pass xtract.floata_to_voidp(sr)
 #xtract.xtract_init_fft(len(wav), xtract.XTRACT_SPECTRUM)
-  result, mean = xtract.xtract_mean(wav.samples, len(wav), None)
+  result, mean = xtract.xtract_mean(wav.samples.a, len(wav), None)
   print(mean)
-  print(wav.fname)
-  for spectra in wav.spectrogram(1024, 256):
+  print(sound.fname)
+  for spectra in sound.spectrogram(1024, 256):
     print_floata(spectra, 10)
