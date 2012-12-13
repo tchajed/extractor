@@ -2,11 +2,16 @@
 
 from libxtract import xtract
 
-f = xtract.floatArray(1)
+def args(*args):
+	""" Prepare arguments for use as argv in libxtract.
 
-def floatPtr(val):
-	f[0] = float(val)
-	return f
+	Allocates its own space for thread safety.
+
+	"""
+	array = xtract.floatArray(len(args))
+	for i, arg in enumerate(args):
+		array[i] = float(arg)
+	return xtract.floata_to_voidp(array)
 
 class CArray:
   """

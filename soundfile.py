@@ -85,10 +85,9 @@ if __name__ == "__main__":
     print("no wav files found")
     sys.exit(1)
   print(len(sound))
-#sr = swigtools.floatPtr(wav.sr)
-# pass xtract.floata_to_voidp(sr)
+  sr = swigtools.args(sound.sr)
 #xtract.xtract_init_fft(len(wav), xtract.XTRACT_SPECTRUM)
-  result, mean = xtract.xtract_mean(wav.samples.a, len(wav), None)
+  result, mean = xtract.xtract_mean(sound.samples.a, len(sound), None)
   print(mean)
   print(sound.fname)
   for spectra in sound.spectrogram(1024, 256):

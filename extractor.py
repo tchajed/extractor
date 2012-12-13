@@ -2,7 +2,9 @@ from soundfile import SoundFile
 from decorator import decorator
 from collections import deque
 from libxtract import xtract
+import swigtools
 
+# TODO: get rid of this, unneeded performance "optimization"
 class Cache:
 	""" A simple cache that replaces oldest-first. """
 	def __init__(self, cap):
@@ -53,16 +55,30 @@ def _feature(func, *args, **kw):
 		cache[fname] = result = func(args, kw)
 		return result
 
-def feature(f):
+def feature(factors):
 	""" Decorate a method to make it a feature.
+
+	Pass a list of window size multipliers the feature should be called at.
 
 	- Handles registration of the function as a feature generator.
 	- Sets up the cache.
 	- passes most decoration work to _feature, which memoizes.
 	"""
-	fn = decorator(_feature, f)
-	fn._is_feature = True
-	return fn
+	# check that feature wasn't accidentally used as a parameter-less decorator
+	if hasattr(factors, '__call__'):
+		raise TypeError("feature needs a list of factors")
+	# ensure a list is used for the factors
+	factor_list = makeList(factors)
+	try:
+		factor_list = [f for f in factors]
+	except TypeError:
+		factor_list = [factors]
+	def feature_decorator(f):
+		fn = decorator(_feature, f)
+		fn._is_feature = True
+		fn.factors = factor_list
+		return fn
+	return feature_decorator
 
 class Extractor:
 	""" A feature extractor that wraps a soundfile. """
@@ -73,8 +89,33 @@ class Extractor:
 	def getspectrum(self, t):
 		""" Get the spectrum at a specific time (in samples). """
 		return self._spectrumcache[t]
-	@feature
+	@feature(1)
 	def Mean(self, t):
 		spectrum = self.getspectrum(t)
 		result, mean = xtract.xtract_mean(spectrum.a, len(spectrum), None)
 		return mean
+	@feature(1)
+	def Stddev(self, t):
+		spectrum = self.getspectrum(t)
+		mean = self.Mean(self, t)
+		result, sigma = xtract.xtract_variance(spectrum.a,
+				len(spectrum),
+				swigtools.args(mean))
+		return sigma
+	def Features(self, minwindow):
+		features = []
+		for name, method in self.__class__.__dict__.iteritems():
+			if hasattr(method, "_is_feature"):
+				features.append(method)
+		for idx, spectrum in enumerate(self.snd.spectrogram(minwindow, minwindow/2)):
+			t = idx * minwindow
+			fvector = []
+			for feature in features:
+				# handle the list of desired factors for this feature
+				# round time passed to function according to factor (so factor of 2
+				# results in every other call being cached)
+				vals = feature(t)
+				try:
+					fvector.extend(vals)
+				except TypeError:
+					fvector.append(vals)
