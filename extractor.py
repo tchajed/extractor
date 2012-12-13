@@ -1,29 +1,10 @@
-from soundfile import SoundFile
-from decorator import decorator
-from collections import deque
-from libxtract import xtract
-import swigtools
+from __future__ import print_function, division
 
-# TODO: get rid of this, unneeded performance "optimization"
-class Cache:
-	""" A simple cache that replaces oldest-first. """
-	def __init__(self, cap):
-		self.cap = cap
-		self._cache = {}
-		self._keys = deque([])
-	def __getitem__(self, key):
-		return self._cache[key]
-	def __setitem__(self, key, val):
-		self._keys.append(key)
-		self._cache[key] = val
-		# do we need to evict?
-		if len(self._cache) > self.cap:
-			# eviction policy is simply to remove oldest added key
-			# so add them in order!
-			toremove = self._keys.popleft()
-			del self._cache[toremove]
-	def __contains__(self, item):
-		return item in self._cache
+from decorator import decorator
+from libxtract import xtract
+from collections import defaultdict
+import swigtools
+import math
 
 def _feature(func, *args, **kw):
 	""" Internal feature decorator.
@@ -38,24 +19,23 @@ def _feature(func, *args, **kw):
 	# this is the required interface of the function signature
 	self = args[0]
 	featurecache = self._featurecache # created by the object initializer
-	t = args[1]
+	tspec = args[1]
 	# the feature name
 	fname = func.__name__
 	# starting a new timestep
-	if t in featurecache:
-		cache = featurecache[t]
+	if tspec in featurecache:
+		cache = featurecache[tspec]
 	else:
-		# for a given time, feature values are cached without resource limits
 		cache = {}
-		featurecache[t] = cache
+		featurecache[tspec] = cache
 	# cache now holds the specific values for this timestep
 	if fname in cache:
 		return cache[fname]
 	else:
-		cache[fname] = result = func(args, kw)
+		cache[fname] = result = func(*args, **kw)
 		return result
 
-def feature(factors):
+def feature(*factors):
 	""" Decorate a method to make it a feature.
 
 	Pass a list of window size multipliers the feature should be called at.
@@ -67,12 +47,7 @@ def feature(factors):
 	# check that feature wasn't accidentally used as a parameter-less decorator
 	if hasattr(factors, '__call__'):
 		raise TypeError("feature needs a list of factors")
-	# ensure a list is used for the factors
-	factor_list = makeList(factors)
-	try:
-		factor_list = [f for f in factors]
-	except TypeError:
-		factor_list = [factors]
+	factor_list = [f for f in factors]
 	def feature_decorator(f):
 		fn = decorator(_feature, f)
 		fn._is_feature = True
@@ -80,42 +55,87 @@ def feature(factors):
 		return fn
 	return feature_decorator
 
+def round_int(val, mult):
+	return (val // mult) * mult
+
 class Extractor:
 	""" A feature extractor that wraps a soundfile. """
 	def __init__(self, snd, cachesize=5):
 		self.snd = snd
-		self._featurecache = Cache(cachesize)
-		self._spectrumcache = Cache(cachesize)
-	def getspectrum(self, t):
-		""" Get the spectrum at a specific time (in samples). """
-		return self._spectrumcache[t]
+		self._featurecache = {}
+		self._spectrumcache = {}
+		self._samplecache = {}
+		self.filtersize = size = 20
+		class filterbank(defaultdict):
+			def __missing__(self, window):
+				self[window] = filters = xtract.create_filterbank(size, window)
+				return filters
+		self._mel_filters = filterbank()
+	def getspectrum(self, tspec):
+		""" Get the spectrum at a specific tspec.
+		
+		A tspec is a tuple (t, window). This considers the same time (in samples)
+		different if used with different window sizes.
+		"""
+		return self._spectrumcache[tspec]
+	def getsamples(self, tspec):
+		""" Get the sample array at a specific tspec. """
+		return self._samplecache[tspec]
 	@feature(1)
-	def Mean(self, t):
-		spectrum = self.getspectrum(t)
+	def Mean(self, tspec):
+		spectrum = self.getspectrum(tspec)
 		result, mean = xtract.xtract_mean(spectrum.a, len(spectrum), None)
 		return mean
 	@feature(1)
-	def Stddev(self, t):
-		spectrum = self.getspectrum(t)
-		mean = self.Mean(self, t)
-		result, sigma = xtract.xtract_variance(spectrum.a,
+	def Stddev(self, tspec):
+		spectrum = self.getspectrum(tspec)
+		mean = self.Mean(tspec)
+		result, var = xtract.xtract_variance(spectrum.a,
 				len(spectrum),
 				swigtools.args(mean))
-		return sigma
+		return math.sqrt(var)
+	@feature(1)
+	def Mfccs(self, tspec):
+		spectrum = self.getsamples(tspec)
+		filterbank = self._mel_filters[tspec[1]]
+		mfccs = xtract.floatArray(self.filtersize)
+		result = xtract.xtract_mfcc(spectrum.a, len(spectrum), filterbank, mfccs)
+		return swigtools.CArray(mfccs, self.filtersize)
 	def Features(self, minwindow):
-		features = []
+		features = defaultdict(list)
 		for name, method in self.__class__.__dict__.iteritems():
 			if hasattr(method, "_is_feature"):
-				features.append(method)
-		for idx, spectrum in enumerate(self.snd.spectrogram(minwindow, minwindow/2)):
-			t = idx * minwindow
-			fvector = []
-			for feature in features:
-				# handle the list of desired factors for this feature
-				# round time passed to function according to factor (so factor of 2
-				# results in every other call being cached)
-				vals = feature(t)
-				try:
-					fvector.extend(vals)
-				except TypeError:
-					fvector.append(vals)
+				for m in method.factors:
+					features[m].append(method)
+		f_array = defaultdict(list)
+		for m in features.keys():
+			window = m * minwindow
+			nshift = window//2
+			# helpful reference (along with formal argument names in src)
+			# http://lists.create.ucsb.edu/pipermail/240/2008-May/001898.html
+			xtract.xtract_init_mfcc(window, # block size
+					self.snd.sr/2.0, # nyquist
+					xtract.XTRACT_EQUAL_GAIN, # "style"
+					80.0, 18000.0, # min/max frequency
+					self.filtersize, # n_filters
+					xtract.fft_tables(self._mel_filters[window])) # filter tables themselves
+			for idx, (samples, spectrum) in enumerate(self.snd.spectrogram(window, nshift)):
+				tspec = idx * nshift, window
+				self._spectrumcache[tspec] = spectrum
+				self._samplecache[tspec] = samples
+				for feature in features[m]:
+					vals = feature(self, tspec)
+					try:
+						f_array[tspec[0]].extend(vals)
+					except TypeError:
+						f_array[tspec[0]].append(vals)
+		return [f_array[tspec] for tspec in sorted(f_array.keys())]
+
+
+if __name__ == "__main__":
+	from soundfile import LoadSpeech
+	snd = LoadSpeech(".").next()
+	e = Extractor(snd)
+	features = e.Features(64)
+	print(features)
+

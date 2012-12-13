@@ -50,6 +50,7 @@ class SoundFile:
     args[3] = 0 # 0/1: whether or not to apply normalization to the result
     while end <= len(self):
       input = xtract.floata_index(self.samples.a, start)
+      # TODO: multiply by hamming window
 # increase to nfft + 2 if including DC component
       spectrum = xtract.floatArray(nfft) 
       result = xtract.xtract_spectrum(input,
@@ -58,7 +59,7 @@ class SoundFile:
           spectrum)
       # TODO: check result to catch errors
       # first nfft/2 floats are coefficients, second half are just frequencies
-      yield spectrum
+      yield swigtools.CArray(input, nfft), swigtools.CArray(spectrum, nfft//2)
       start += nshift
       end += nshift
 
@@ -85,7 +86,7 @@ if __name__ == "__main__":
     print("no wav files found")
     sys.exit(1)
   print(len(sound))
-  sr = swigtools.args(sound.sr)
+#sr = swigtools.args(sound.sr)
 #xtract.xtract_init_fft(len(wav), xtract.XTRACT_SPECTRUM)
   result, mean = xtract.xtract_mean(sound.samples.a, len(sound), None)
   print(mean)

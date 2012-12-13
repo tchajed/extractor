@@ -30,5 +30,5 @@ class CArray:
     i = 0
     while i < self.n:
       yield self.a[i]
-      y += 1
+      i += 1
 
