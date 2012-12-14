@@ -5,6 +5,7 @@ from libxtract import xtract
 from collections import defaultdict
 import swigtools
 import math
+import sys
 
 def _feature(func, *args, **kw):
 	""" Internal feature decorator.
@@ -134,8 +135,13 @@ class Extractor:
 
 if __name__ == "__main__":
 	from soundfile import LoadSpeech
-	snd = LoadSpeech(".").next()
-	e = Extractor(snd)
-	features = e.Features(64)
-	print(features)
+	if len(sys.argv) > 1:
+		dir = sys.argv[1]
+	else:
+		dir = "."
+	for snd in LoadSpeech(dir):
+		e = Extractor(snd)
+		print(snd.fname)
+		features = e.Features(64)
+		print(len(features))
 
