@@ -1,147 +1,118 @@
 from __future__ import print_function, division
-
-from decorator import decorator
-from libxtract import xtract
-from collections import defaultdict
-import swigtools
-import math
+import itertools
+import numpy as np
+import re
+import soundfile
 import sys
+import yaafelib as yf
 
-def _feature(func, *args, **kw):
-	""" Internal feature decorator.
+class PhonemeLabeler:
+	def __init__(self):
+		pass
+	def __call__(self, fname):
+		""" Generate (timestamp, phoneme) tuples to label with phonemes.
 
-	Handles memoization using the Extractor featurecache.
-	func should:
-	- be an instance method of Extractor
-	- take a parameter t
-	- depend only on t for correctness (for example, other parameters don't
-		change within a time)
+		As required by the extractor labeler, 
+		"""
+		phfname = re.sub("\.wav$", ".phn", fname)
+		f = open(phfname)
+		for line in f:
+			start, _, ph = line.split(" ")
+			start = int(start)
+			ph = ph.strip()
+			yield (start, ph)
+		f.close()
+
+def Labeler(f):
+	""" Wrap the output of a function to make it a labeler.
+
+	Converts a function that returns a single value for a file into the format expected by 
 	"""
-	# this is the required interface of the function signature
-	self = args[0]
-	featurecache = self._featurecache # created by the object initializer
-	tspec = args[1]
-	# the feature name
-	fname = func.__name__
-	# starting a new timestep
-	if tspec in featurecache:
-		cache = featurecache[tspec]
-	else:
-		cache = {}
-		featurecache[tspec] = cache
-	# cache now holds the specific values for this timestep
-	if fname in cache:
-		return cache[fname]
-	else:
-		cache[fname] = result = func(*args, **kw)
-		return result
+	def label_f(fname):
+		return [(0, f(fname))]
+	return label_f
 
-def feature(*factors):
-	""" Decorate a method to make it a feature.
-
-	Pass a list of window size multipliers the feature should be called at.
-
-	- Handles registration of the function as a feature generator.
-	- Sets up the cache.
-	- passes most decoration work to _feature, which memoizes.
+def speaker(fname):
+	""" Implements the speaker labelling function for TIMIT.
+	
+	The speaker is identified by (m|f)[a-z]{3}[0-9], where the first character is
+	their gender, the three letters are their initials, and the number
+	disambiguates speakers with identical initials. This is simply the name of
+	the directory that holds the wav file in the TIMIT database.
 	"""
-	# check that feature wasn't accidentally used as a parameter-less decorator
-	if hasattr(factors, '__call__'):
-		raise TypeError("feature needs a list of factors")
-	factor_list = [f for f in factors]
-	def feature_decorator(f):
-		fn = decorator(_feature, f)
-		fn._is_feature = True
-		fn.factors = factor_list
-		return fn
-	return feature_decorator
-
-def round_int(val, mult):
-	return (val // mult) * mult
+	dirs = fname.split("/")
+	if len(dirs) < 2:
+		return ""
+	return dirs[-2]
 
 class Extractor:
-	""" A feature extractor that wraps a soundfile. """
-	def __init__(self, snd, cachesize=5):
-		self.snd = snd
-		self._featurecache = {}
-		self._spectrumcache = {}
-		self._samplecache = {}
-		self.filtersize = size = 20
-		class filterbank(defaultdict):
-			def __missing__(self, window):
-				self[window] = filters = xtract.create_filterbank(size, window)
-				return filters
-		self._mel_filters = filterbank()
-	def getspectrum(self, tspec):
-		""" Get the spectrum at a specific tspec.
+	""" Extract features according to a plan over many sound files. """
+	def __init__(self, fp, labeler):
+		""" Instantiate an extractor with a feature plan and labeler.
+
+		A feature plan is a prepared set of features from yaafe.
+
+		A labeler is an object that will be called with a filename and should
+		return a generator of tuples (sample, label), where the label applies to
+		the audio data between sample and the next tuple. The first tuple's
+		timestamp is ignored. Note that this means every timestep will be given a
+		label and a single label for the entire file can be implemented by
+		returning a list with one tuple whose second element is the desired label.
+		The function Labeler allows to create a valid labeler with a simpler
+		function that just outputs any label value.
 		
-		A tspec is a tuple (t, window). This considers the same time (in samples)
-		different if used with different window sizes.
 		"""
-		return self._spectrumcache[tspec]
-	def getsamples(self, tspec):
-		""" Get the sample array at a specific tspec. """
-		return self._samplecache[tspec]
-	@feature(1)
-	def Mean(self, tspec):
-		spectrum = self.getspectrum(tspec)
-		result, mean = xtract.xtract_mean(spectrum.a, len(spectrum), None)
-		return mean
-	@feature(1)
-	def Stddev(self, tspec):
-		spectrum = self.getspectrum(tspec)
-		mean = self.Mean(tspec)
-		result, var = xtract.xtract_variance(spectrum.a,
-				len(spectrum),
-				swigtools.args(mean))
-		return math.sqrt(var)
-	@feature(1)
-	def Mfccs(self, tspec):
-		spectrum = self.getsamples(tspec)
-		filterbank = self._mel_filters[tspec[1]]
-		mfccs = xtract.floatArray(self.filtersize)
-		result = xtract.xtract_mfcc(spectrum.a, len(spectrum), filterbank, mfccs)
-		return swigtools.CArray(mfccs, self.filtersize)
-	def Features(self, minwindow):
-		features = defaultdict(list)
-		for name, method in self.__class__.__dict__.iteritems():
-			if hasattr(method, "_is_feature"):
-				for m in method.factors:
-					features[m].append(method)
-		f_array = defaultdict(list)
-		for m in features.keys():
-			window = m * minwindow
-			nshift = window//2
-			# helpful reference (along with formal argument names in src)
-			# http://lists.create.ucsb.edu/pipermail/240/2008-May/001898.html
-			xtract.xtract_init_mfcc(window, # block size
-					self.snd.sr/2.0, # nyquist
-					xtract.XTRACT_EQUAL_GAIN, # "style"
-					80.0, 18000.0, # min/max frequency
-					self.filtersize, # n_filters
-					xtract.fft_tables(self._mel_filters[window])) # filter tables themselves
-			for idx, (samples, spectrum) in enumerate(self.snd.spectrogram(window, nshift)):
-				tspec = idx * nshift, window
-				self._spectrumcache[tspec] = spectrum
-				self._samplecache[tspec] = samples
-				for feature in features[m]:
-					vals = feature(self, tspec)
-					try:
-						f_array[tspec[0]].extend(vals)
-					except TypeError:
-						f_array[tspec[0]].append(vals)
-		return [f_array[tspec] for tspec in sorted(f_array.keys())]
-
-
+		self.fp = fp
+		self.labeler = labeler
+		self.engine = yf.Engine()
+		self.engine.load(fp.getDataFlow())
+		minstep = sys.maxint
+		for feat, info in self.engine.getOutputs().iteritems():
+			minstep = min(info['sampleStep'], minstep)
+		self._minstep = minstep
+		self._indexf = {}
+		def linear(domainmax, rangemax):
+			def transform(i):
+				return int(i * domainmax / rangemax)
+			return transform
+		for feat, info in self.engine.getOutputs().iteritems():
+			step = info['sampleStep']
+			# a function that maps the minstep indices to indices for a particular
+			# feature. Longer steps have fewer indices, so many minstep indices will
+			# map to the same value here, resulting in repetition.
+			self._indexf[feat] = linear(minstep, step)
+	def features(self, sound):
+		""" Execute the plan for a given sound, returning a time series of vector data. """
+		features = []
+		feats = self.engine.processAudio(sound.samples)
+		labels = [l for l in self.labeler(sound.fname)]
+		# make a pseudo-label past the end of the sound
+		labels.append( (sound.samples.shape[1] + 1, None) )
+		# the current label index
+		currl = 0
+		for i,t in enumerate(xrange(0, sound.samples.shape[1], self._minstep)):
+			# make sure the next time is the one just past the current label
+			while t > labels[currl+1][0]:
+				currl += 1
+			currlabel = labels[currl][1]
+			# start out features with the label for this timestep
+			features.append([currlabel])
+			for feat, vals in feats.iteritems():
+				index = self._indexf[feat](i)
+				features[i].extend(vals[index])
+		return features
+			
 if __name__ == "__main__":
-	from soundfile import LoadSpeech
 	if len(sys.argv) > 1:
-		dir = sys.argv[1]
+		rootdir = sys.argv[1]
 	else:
-		dir = "."
-	for snd in LoadSpeech(dir):
-		e = Extractor(snd)
-		print(snd.fname)
-		features = e.Features(64)
-		print(len(features))
-
+		rootdir = "."
+	fp = yf.FeaturePlan(sample_rate=16000)
+	fp.addFeature('mfcc: MFCC blockSize=512 stepSize=256')
+	#fp.addFeature('mfcc_d1: MFCC blockSize=512 stepSize=256 > Derivate DOrder=1')
+	fp.addFeature('sss: SpectralShapeStatistics blockSize=1024 stepSize=512')
+	e = Extractor(fp, PhonemeLabeler())
+	for sound in itertools.islice(soundfile.LoadSpeech(rootdir), 10):
+		features = e.features(sound)
+		print(sound)
+		print(np.array(features).shape)
