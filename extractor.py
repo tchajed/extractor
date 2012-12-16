@@ -5,15 +5,13 @@ import re
 import soundfile
 import sys
 import yaafelib as yf
+from multiprocessing import Pool
 
 class PhonemeLabeler:
 	def __init__(self):
 		pass
 	def __call__(self, fname):
-		""" Generate (timestamp, phoneme) tuples to label with phonemes.
-
-		As required by the extractor labeler, 
-		"""
+		""" Generate (timestamp, phoneme) tuples to label with phonemes. """
 		phfname = re.sub("\.wav$", ".phn", fname)
 		f = open(phfname)
 		for line in f:
@@ -84,13 +82,13 @@ class Extractor:
 	def features(self, sound):
 		""" Execute the plan for a given sound, returning a time series of vector data. """
 		features = []
-		feats = self.engine.processAudio(sound.samples)
+		feats = self.engine.processAudio(sound.samples())
 		labels = [l for l in self.labeler(sound.fname)]
 		# make a pseudo-label past the end of the sound
-		labels.append( (sound.samples.shape[1] + 1, None) )
+		labels.append( (sound.samples().shape[1] + 1, None) )
 		# the current label index
 		currl = 0
-		for i,t in enumerate(xrange(0, sound.samples.shape[1], self._minstep)):
+		for i,t in enumerate(xrange(0, sound.samples().shape[1], self._minstep)):
 			# make sure the next time is the one just past the current label
 			while t > labels[currl+1][0]:
 				currl += 1
@@ -111,8 +109,13 @@ if __name__ == "__main__":
 	fp.addFeature('mfcc: MFCC blockSize=512 stepSize=256')
 	#fp.addFeature('mfcc_d1: MFCC blockSize=512 stepSize=256 > Derivate DOrder=1')
 	fp.addFeature('sss: SpectralShapeStatistics blockSize=1024 stepSize=512')
-	e = Extractor(fp, PhonemeLabeler())
-	for sound in itertools.islice(soundfile.LoadSpeech(rootdir), 10):
-		features = e.features(sound)
-		print(sound)
-		print(np.array(features).shape)
+	def extract(sounds):
+		e = Extractor(fp, PhonemeLabeler())
+		for sound in sounds:
+			features = e.features(sound)
+			print(sound)
+			print(np.array(features).shape)
+	sounds = [s for s in itertools.islice(soundfile.LoadSpeech(rootdir), 1000)]
+	p = Pool(4)
+	n = 100
+	p.map(extract, [sounds[i:i+n] for i in xrange(0, 1000, n)])
