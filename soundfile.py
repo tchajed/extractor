@@ -36,6 +36,7 @@ class SoundFile:
       self._sr = 0
       self._samples = np.array([[]], float)
     self.loaded = True
+    return self
   def samples(self):
     if not self.loaded:
       self.load()

@@ -1,11 +1,13 @@
 from __future__ import print_function, division
-import itertools
+from multiprocessing import Pool, Lock
 import numpy as np
+import itertools
+import random
 import re
 import soundfile
 import sys
+import os
 import yaafelib as yf
-from multiprocessing import Pool
 
 class PhonemeLabeler:
 	def __init__(self):
@@ -107,15 +109,26 @@ if __name__ == "__main__":
 		rootdir = "."
 	fp = yf.FeaturePlan(sample_rate=16000)
 	fp.addFeature('mfcc: MFCC blockSize=512 stepSize=256')
-	#fp.addFeature('mfcc_d1: MFCC blockSize=512 stepSize=256 > Derivate DOrder=1')
-	fp.addFeature('sss: SpectralShapeStatistics blockSize=1024 stepSize=512')
+	fp.addFeature('mfcc_d1: MFCC blockSize=512 stepSize=256 > Derivate DOrder=1')
+	fp.addFeature('sss: SpectralShapeStatistics blockSize=512 stepSize=256')
+
+	l = Lock() # a printing lock
 	def extract(sounds):
-		e = Extractor(fp, PhonemeLabeler())
+		e = Extractor(fp, Labeler(speaker))
+		sound_features = []
 		for sound in sounds:
-			features = e.features(sound)
-			print(sound)
-			print(np.array(features).shape)
-	sounds = [s for s in itertools.islice(soundfile.LoadSpeech(rootdir), 1000)]
+			sound_features.append(e.features(sound))
+			#print(sound)
+			#print(np.array(features).shape)
+		l.acquire()
+		for sound_ft in sound_features:
+			for feature_vec in sound_ft:
+				print(",".join([str(f) for f in feature_vec]))
+		l.release()
+		return None
+	sounds = [s for s in itertools.islice(soundfile.LoadSpeech(rootdir), 5000)]
+	random.shuffle(sounds)
+	sounds = sounds[:500]
 	p = Pool(4)
-	n = 100
-	p.map(extract, [sounds[i:i+n] for i in xrange(0, 1000, n)])
+	n = 50
+	p.map(extract, [sounds[i:i+n] for i in xrange(0, len(sounds), n)])
